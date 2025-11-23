@@ -9,12 +9,15 @@ export interface Tournament {
 }
 
 export interface Participant {
-  id: string; // Firestore document id
+  id: string;
   name: string;
-  teamName?: string;
-  contact?: string;
-  amountDue: number; //fee
+  teamName?: string | null;
+  contact?: string | null;
+  amountDue: number;
   amountPaid: number;
   status: PaymentStatus;
-  createdAt?: Timestamp | null;
+  createdAt: any;
+  photoUrl?: string | null;
+  receiptUrl?: string | null;
+  paymentRef?: string | null; // 👈 add this
 }

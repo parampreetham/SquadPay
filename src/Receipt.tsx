@@ -33,7 +33,11 @@ export function Receipt() {
             amountPaid: data.amountPaid ?? 0,
             status: data.status ?? "pending",
             createdAt: data.createdAt ?? null,
+            paymentRef: data.paymentRef ?? null,      // 👈 important
+            photoUrl: data.photoUrl ?? null,          // (optional)
+            receiptUrl: data.receiptUrl ?? null,      // (optional)
           });
+
         } else {
           setP(null);
         }
@@ -103,17 +107,17 @@ export function Receipt() {
     p.status === "paid"
       ? "bg-emerald-100 text-emerald-700 border-emerald-300"
       : p.status === "partial"
-      ? "bg-amber-100 text-amber-700 border-amber-300"
-      : "bg-rose-100 text-rose-700 border-rose-300";
+        ? "bg-amber-100 text-amber-700 border-amber-300"
+        : "bg-rose-100 text-rose-700 border-rose-300";
 
   const statusLabel =
     p.status === "paid"
       ? "PAID"
       : p.status === "partial"
-      ? "PARTIAL"
-      : "PENDING";
+        ? "PARTIAL"
+        : "PENDING";
 
-    const handleShareImage = async () => {
+  const handleShareImage = async () => {
     const el = document.getElementById("receipt-print");
     if (!el) return;
 
@@ -136,9 +140,8 @@ export function Receipt() {
         type: "image/png",
       });
 
-      const text = `SquadPay receipt for ${p?.name}${
-        p?.teamName ? ` (${p.teamName})` : ""
-      } – ${tournamentName}`;
+      const text = `SquadPay receipt for ${p?.name}${p?.teamName ? ` (${p.teamName})` : ""
+        } – ${tournamentName}`;
 
       // If browser supports sharing files (Android Chrome, etc.)
       if (
@@ -221,6 +224,12 @@ export function Receipt() {
                   <span className="font-semibold">Receipt #:</span>{" "}
                   <span className="font-mono">{receiptId}</span>
                 </div>
+                {p.paymentRef && (
+                  <div className="mt-2 text-xs text-slate-600">
+                    Payment Ref:&nbsp;
+                    <span className="font-mono text-slate-900">{p.paymentRef}</span>
+                  </div>
+                )}
                 <div>
                   <span className="font-semibold">Date:</span>{" "}
                   {formattedDate}
@@ -287,7 +296,7 @@ export function Receipt() {
           </div>
 
           {/* Footer note + actions */}
-                     <div className="mt-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div className="mt-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div className="text-[11px] text-slate-500">
               This is a system-generated receipt for tournament fee tracking
               using SquadPay. For any corrections, please contact the

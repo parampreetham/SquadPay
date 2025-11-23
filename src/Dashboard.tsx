@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import type { FormEvent } from "react";
-import { db } from "./firebase";
+import { db, storage } from "./firebase";
 import {
     addDoc,
     collection,
@@ -14,6 +14,7 @@ import {
     writeBatch,
     deleteDoc,
 } from "firebase/firestore";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import type { Participant, PaymentStatus, Tournament } from "./types";
 import ConfirmModal from "./components/ConfirmModal";
 
@@ -35,7 +36,6 @@ export function Dashboard() {
     const [deleteParticipant, setDeleteParticipant] = useState<Participant | null>(null);
     const [deleteTournament, setDeleteTournament] = useState<Tournament | null>(null);
 
-
     // Tournament form
     const [newTournamentName, setNewTournamentName] = useState("");
 
@@ -44,10 +44,17 @@ export function Dashboard() {
     const [teamName, setTeamName] = useState("");
     const [contact, setContact] = useState("");
     const [fee, setFee] = useState("");
+    const [newPhotoFile, setNewPhotoFile] = useState<File | null>(null);
+    const [previewImage, setPreviewImage] = useState<string | null>(null);
+
+    // Filter by payment status
+    const [paymentFilter, setPaymentFilter] = useState<"all" | "paid" | "partial" | "pending">("all");
 
     // Edit Paid modal
     const [editingParticipantPaid, setEditingParticipantPaid] = useState<Participant | null>(null);
     const [editPaidValue, setEditPaidValue] = useState<string>("");
+    const [receiptFile, setReceiptFile] = useState<File | null>(null);
+    const [editPaymentRef, setEditPaymentRef] = useState<string>("");
 
     // Edit Participant modal
     const [editingParticipantDetails, setEditingParticipantDetails] = useState<Participant | null>(null);
@@ -55,6 +62,7 @@ export function Dashboard() {
     const [editTeamName, setEditTeamName] = useState("");
     const [editContact, setEditContact] = useState("");
     const [editFee, setEditFee] = useState("");
+    const [editPhotoFile, setEditPhotoFile] = useState<File | null>(null);
 
     // Edit Tournament modal
     const [editingTournament, setEditingTournament] = useState<Tournament | null>(null);
@@ -114,12 +122,7 @@ export function Dashboard() {
 
         setLoadingParticipants(true);
 
-        const participantsRef = collection(
-            db,
-            "tournaments",
-            selectedTournamentId,
-            "participants"
-        );
+        const participantsRef = collection(db, "tournaments", selectedTournamentId, "participants");
         const q = query(participantsRef, orderBy("createdAt", "asc"));
 
         const unsub = onSnapshot(
@@ -136,7 +139,11 @@ export function Dashboard() {
                         amountPaid: data.amountPaid ?? 0,
                         status: data.status ?? "pending",
                         createdAt: data.createdAt ?? null,
+                        photoUrl: data.photoUrl ?? null,
+                        receiptUrl: data.receiptUrl ?? null,
+                        paymentRef: data.paymentRef ?? null, // 👈 new
                     };
+
                 });
                 setParticipants(list);
                 setLoadingParticipants(false);
@@ -151,6 +158,7 @@ export function Dashboard() {
         return () => unsub();
     }, [selectedTournamentId]);
 
+    // Totals and counts
     const totals = useMemo(() => {
         let totalFee = 0;
         let totalPaid = 0;
@@ -161,6 +169,16 @@ export function Dashboard() {
         const totalRemaining = totalFee - totalPaid;
         return { totalFee, totalPaid, totalRemaining };
     }, [participants]);
+
+    const peoplePaidCount = useMemo(
+        () => participants.filter((p) => p.status === "paid").length,
+        [participants]
+    );
+
+    const filteredParticipants = useMemo(() => {
+        if (paymentFilter === "all") return participants;
+        return participants.filter((p) => p.status === paymentFilter);
+    }, [participants, paymentFilter]);
 
     // 🔹 Create tournament
     const handleCreateTournament = async (e: FormEvent) => {
@@ -174,12 +192,12 @@ export function Dashboard() {
         }
 
         try {
-            const ref = await addDoc(collection(db, "tournaments"), {
+            const refTournament = await addDoc(collection(db, "tournaments"), {
                 name,
                 createdAt: serverTimestamp(),
             });
             setNewTournamentName("");
-            setSelectedTournamentId(ref.id);
+            setSelectedTournamentId(refTournament.id);
         } catch (err) {
             console.error("Error creating tournament:", err);
             alert("Failed to create tournament.");
@@ -202,8 +220,8 @@ export function Dashboard() {
         }
 
         try {
-            const ref = doc(db, "tournaments", editingTournament.id);
-            await updateDoc(ref, { name: newName });
+            const refTournament = doc(db, "tournaments", editingTournament.id);
+            await updateDoc(refTournament, { name: newName });
             setEditingTournament(null);
         } catch (err) {
             console.error("Error renaming tournament:", err);
@@ -235,6 +253,47 @@ export function Dashboard() {
         }
     };
 
+    // 🔹 Helper: upload participant photo
+    const uploadParticipantPhoto = async (
+        file: File,
+        tournamentId: string,
+        participantId: string
+    ) => {
+        if (!storage) return;
+        const storageRef = ref(
+            storage,
+            `tournaments/${tournamentId}/participants/${participantId}/photo.jpg`
+        );
+        await uploadBytes(storageRef, file);
+        const url = await getDownloadURL(storageRef);
+        await updateDoc(
+            doc(db!, "tournaments", tournamentId, "participants", participantId),
+            {
+                photoUrl: url,
+            }
+        );
+    };
+
+    // 🔹 Helper: upload payment receipt
+    const uploadPaymentReceipt = async (
+        file: File,
+        tournamentId: string,
+        participantId: string
+    ) => {
+        if (!storage) return;
+        const storageRef = ref(
+            storage,
+            `tournaments/${tournamentId}/participants/${participantId}/receipt.jpg`
+        );
+        await uploadBytes(storageRef, file);
+        const url = await getDownloadURL(storageRef);
+        await updateDoc(
+            doc(db!, "tournaments", tournamentId, "participants", participantId),
+            {
+                receiptUrl: url,
+            }
+        );
+    };
 
     // 🔹 Add participant
     const handleAddParticipant = async (e: FormEvent) => {
@@ -265,7 +324,7 @@ export function Dashboard() {
                 "participants"
             );
 
-            await addDoc(participantsRef, {
+            const newDocRef = await addDoc(participantsRef, {
                 name: name.trim(),
                 teamName: teamName.trim() || null,
                 contact: contact.trim() || null,
@@ -273,12 +332,19 @@ export function Dashboard() {
                 amountPaid: 0,
                 status,
                 createdAt: serverTimestamp(),
+                photoUrl: null,
+                receiptUrl: null,
             });
+
+            if (newPhotoFile) {
+                await uploadParticipantPhoto(newPhotoFile, selectedTournamentId, newDocRef.id);
+            }
 
             setName("");
             setTeamName("");
             setContact("");
             setFee("");
+            setNewPhotoFile(null);
         } catch (err) {
             console.error("Error adding participant:", err);
             alert("Failed to add participant.");
@@ -286,7 +352,11 @@ export function Dashboard() {
     };
 
     // 🔹 Update Paid
-    const handleUpdatePaid = async (p: Participant, newPaid: number) => {
+    const handleUpdatePaid = async (
+        p: Participant,
+        newPaid: number,
+        paymentRef?: string
+    ) => {
         if (!db || !selectedTournamentId) return;
         if (Number.isNaN(newPaid) || newPaid < 0) {
             alert("Paid amount must be 0 or a positive number");
@@ -296,42 +366,61 @@ export function Dashboard() {
         const status = computeStatus(p.amountDue, newPaid);
 
         try {
-            const ref = doc(
+            const refParticipant = doc(
                 db,
                 "tournaments",
                 selectedTournamentId,
                 "participants",
                 p.id
             );
-            await updateDoc(ref, {
+
+            const updateData: any = {
                 amountPaid: newPaid,
                 status,
-            });
+            };
+
+            if (paymentRef !== undefined) {
+                const trimmed = paymentRef.trim();
+                updateData.paymentRef = trimmed ? trimmed : null;
+            }
+
+            await updateDoc(refParticipant, updateData);
         } catch (err) {
             console.error("Error updating paid amount:", err);
             alert("Failed to update paid amount.");
         }
     };
 
+
     // 🔹 Edit Paid modal open/close
     const handleEditPaidClick = (p: Participant) => {
         setEditingParticipantPaid(p);
         setEditPaidValue(p.amountPaid.toString());
+        setEditPaymentRef(p.paymentRef ?? "");
+        setReceiptFile(null);
     };
 
     const handleConfirmEditPaid = async () => {
-        if (!editingParticipantPaid) return;
+        if (!editingParticipantPaid || !selectedTournamentId) return;
         const value = Number(editPaidValue);
         if (Number.isNaN(value) || value < 0) {
             alert("Paid amount must be 0 or a positive number");
             return;
         }
-        await handleUpdatePaid(editingParticipantPaid, value);
+
+        await handleUpdatePaid(editingParticipantPaid, value, editPaymentRef);
+
+        if (receiptFile) {
+            await uploadPaymentReceipt(receiptFile, selectedTournamentId, editingParticipantPaid.id);
+        }
+
         setEditingParticipantPaid(null);
+        setReceiptFile(null);
     };
 
     const handleCancelEditPaid = () => {
         setEditingParticipantPaid(null);
+        setReceiptFile(null);
     };
 
     // 🔹 Edit Participant details
@@ -341,6 +430,7 @@ export function Dashboard() {
         setEditTeamName(p.teamName ?? "");
         setEditContact(p.contact ?? "");
         setEditFee(p.amountDue.toString());
+        setEditPhotoFile(null);
     };
 
     const handleSaveParticipantDetails = async () => {
@@ -359,21 +449,31 @@ export function Dashboard() {
         const status = computeStatus(newFee, editingParticipantDetails.amountPaid);
 
         try {
-            const ref = doc(
+            const refParticipant = doc(
                 db,
                 "tournaments",
                 selectedTournamentId,
                 "participants",
                 editingParticipantDetails.id
             );
-            await updateDoc(ref, {
+            await updateDoc(refParticipant, {
                 name: editName.trim(),
                 teamName: editTeamName.trim() || null,
                 contact: editContact.trim() || null,
                 amountDue: newFee,
                 status,
             });
+
+            if (editPhotoFile) {
+                await uploadParticipantPhoto(
+                    editPhotoFile,
+                    selectedTournamentId,
+                    editingParticipantDetails.id
+                );
+            }
+
             setEditingParticipantDetails(null);
+            setEditPhotoFile(null);
         } catch (err) {
             console.error("Error updating participant:", err);
             alert("Failed to update participant.");
@@ -382,6 +482,7 @@ export function Dashboard() {
 
     const handleCancelParticipantDetails = () => {
         setEditingParticipantDetails(null);
+        setEditPhotoFile(null);
     };
 
     // 🔹 Delete participant
@@ -389,20 +490,19 @@ export function Dashboard() {
         if (!db || !selectedTournamentId) return;
 
         try {
-            const ref = doc(
+            const refParticipant = doc(
                 db,
                 "tournaments",
                 selectedTournamentId,
                 "participants",
                 p.id
             );
-            await deleteDoc(ref);
+            await deleteDoc(refParticipant);
         } catch (err) {
             console.error("Error deleting participant:", err);
             alert("Failed to delete participant.");
         }
     };
-
 
     // 🔹 WhatsApp reminder
     const sendReminder = (p: Participant) => {
@@ -414,9 +514,7 @@ export function Dashboard() {
             return;
         }
 
-        const lineName = p.teamName
-            ? `${p.name} (${p.teamName})`
-            : p.name;
+        const lineName = p.teamName ? `${p.name} (${p.teamName})` : p.name;
 
         const message = encodeURIComponent(
             `Hello ${lineName},\n\nYour cricket tournament fee is pending.\n` +
@@ -429,14 +527,131 @@ export function Dashboard() {
         window.open(`https://wa.me/91${phone}?text=${message}`, "_blank");
     };
 
-    const selectedTournament = tournaments.find(
-        (t) => t.id === selectedTournamentId
-    );
+    const selectedTournament = tournaments.find((t) => t.id === selectedTournamentId);
+
+    // put this inside Dashboard component, above the `if (loadingTournaments)` check
+
+    const ActionMenu = ({
+        onEdit,
+        onDelete,
+        onReceipt,
+        onReminder,
+        onViewProof,
+    }: {
+        onEdit: () => void;
+        onDelete: () => void;
+        onReceipt?: () => void;
+        onReminder?: () => void;
+        onViewProof?: () => void;
+    }) => {
+        const [open, setOpen] = useState(false);
+        const menuRef = useRef<HTMLDivElement>(null);
+
+        // 🔹 Close menu when clicking outside
+        useEffect(() => {
+            const handleClickOutside = (e: Event) => {
+                if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+                    setOpen(false);
+                }
+            };
+
+            if (open) {
+                document.addEventListener("mousedown", handleClickOutside);
+                document.addEventListener("touchstart", handleClickOutside);
+            }
+
+            return () => {
+                document.removeEventListener("mousedown", handleClickOutside);
+                document.removeEventListener("touchstart", handleClickOutside);
+            };
+        }, [open]);
+
+        const item =
+            "w-full text-left px-3 py-2 text-xs text-slate-200 hover:bg-slate-800 transition";
+
+        return (
+            <div className="relative" ref={menuRef}>
+                <button
+                    className="px-2 py-1 rounded-md hover:bg-slate-800 transition"
+                    onClick={() => setOpen((v) => !v)}
+                >
+                    ⋮
+                </button>
+
+                {open && (
+                    <div className="absolute right-0 mt-2 w-40 bg-slate-900 border border-slate-700 rounded-lg shadow-xl z-40">
+                        <button
+                            onClick={() => {
+                                onEdit();
+                                setOpen(false);
+                            }}
+                            className={item}
+                        >
+                            Edit
+                        </button>
+
+                        {onReceipt && (
+                            <button
+                                onClick={() => {
+                                    onReceipt();
+                                    setOpen(false);
+                                }}
+                                className={item}
+                            >
+                                Receipt
+                            </button>
+                        )}
+
+                        {onViewProof && (
+                            <button
+                                onClick={() => {
+                                    onViewProof();
+                                    setOpen(false);
+                                }}
+                                className={item}
+                            >
+                                View Proof
+                            </button>
+                        )}
+
+                        {onReminder && (
+                            <button
+                                onClick={() => {
+                                    onReminder();
+                                    setOpen(false);
+                                }}
+                                className={item}
+                            >
+                                Reminder
+                            </button>
+                        )}
+
+                        <button
+                            onClick={() => {
+                                onDelete();
+                                setOpen(false);
+                            }}
+                            className={item + " text-rose-400"}
+                        >
+                            Delete
+                        </button>
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+
+    const openReceipt = (p: Participant) => {
+        if (!selectedTournamentId || p.amountPaid <= 0) return;
+        const base = import.meta.env.BASE_URL || "/";
+        window.open(`${base}t/${selectedTournamentId}/receipt/${p.id}`, "_blank");
+    };
+
+
 
     if (loadingTournaments) {
-        return (
-            <div className="text-sm text-slate-400">Loading tournaments…</div>
-        );
+        return <div className="text-sm text-slate-400">Loading tournaments…</div>;
     }
 
     if (error) {
@@ -503,9 +718,7 @@ export function Dashboard() {
                         <div className="flex flex-wrap items-center gap-2 text-xs mt-2">
                             <span className="text-slate-400">
                                 Selected:{" "}
-                                <span className="text-emerald-300">
-                                    {selectedTournament.name}
-                                </span>
+                                <span className="text-emerald-300">{selectedTournament.name}</span>
                             </span>
                             <button
                                 type="button"
@@ -525,7 +738,7 @@ export function Dashboard() {
                     )}
                 </div>
 
-                <div className="grid grid-cols-3 gap-3 min-w-[260px] text-xs sm:text-sm">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 min-w-[260px] text-xs sm:text-sm">
                     <StatCard
                         label="Total Fee"
                         value={`₹${totals.totalFee}`}
@@ -541,14 +754,19 @@ export function Dashboard() {
                         value={`₹${totals.totalRemaining}`}
                         accent="border-amber-400/70 text-amber-300"
                     />
+                    <StatCard
+                        label="People Paid"
+                        value={`${peoplePaidCount} / ${participants.length}`}
+                        accent="border-slate-700 text-slate-200"
+                    />
                 </div>
             </section>
 
             {!selectedTournamentId && (
                 <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5 shadow-lg shadow-black/30">
                     <p className="text-sm text-slate-300">
-                        Create your first tournament above, then you can add squads and
-                        track payments.
+                        Create your first tournament above, then you can add squads and track
+                        payments.
                     </p>
                 </section>
             )}
@@ -621,6 +839,20 @@ export function Dashboard() {
                                 />
                             </div>
 
+                            <div className="flex flex-col gap-1">
+                                <label className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
+                                    Photo (optional)
+                                </label>
+                                <input
+                                    type="file"
+                                    accept="image/*"
+                                    className="text-[11px] text-slate-400 file:mr-2 file:rounded-lg file:border file:border-slate-600 file:bg-slate-800 file:px-2 file:py-1 file:text-[11px] file:text-slate-200 hover:file:border-emerald-400/70 hover:file:text-emerald-300"
+                                    onChange={(e) =>
+                                        setNewPhotoFile(e.target.files?.[0] ?? null)
+                                    }
+                                />
+                            </div>
+
                             <button
                                 type="submit"
                                 className="self-end h-[38px] rounded-xl bg-emerald-500 px-4 text-xs font-semibold uppercase tracking-[0.16em] text-slate-950 hover:bg-emerald-400 transition shadow-md shadow-emerald-500/40"
@@ -631,129 +863,149 @@ export function Dashboard() {
                     </section>
 
                     {/* Participants table */}
-                    <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5 shadow-xl shadow-black/30">
-                        <div className="flex items-center justify-between gap-2 mb-3">
+                    <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5 shadow-xl shadow-black/30 h-[420px] flex flex-col">
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
                             <h3 className="text-sm font-semibold text-slate-100">
                                 Participants
                             </h3>
-                            <span className="text-[11px] text-slate-500">
-                                Click the ✏️ icon to edit Paid.
-                            </span>
+                            <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                                <span className="text-slate-500 mr-1">Filter:</span>
+                                {["all", "paid", "partial", "pending"].map((f) => (
+                                    <button
+                                        key={f}
+                                        type="button"
+                                        onClick={() =>
+                                            setPaymentFilter(f as "all" | "paid" | "partial" | "pending")
+                                        }
+                                        className={
+                                            "rounded-full border px-3 py-1 transition " +
+                                            (paymentFilter === f
+                                                ? "border-emerald-400/80 bg-emerald-500/10 text-emerald-200"
+                                                : "border-slate-700 bg-slate-900/80 text-slate-300 hover:border-emerald-400/60 hover:text-emerald-200")
+                                        }
+                                    >
+                                        {f === "all"
+                                            ? "All"
+                                            : f.charAt(0).toUpperCase() + f.slice(1)}
+                                    </button>
+                                ))}
+                            </div>
                         </div>
 
-                        {loadingParticipants ? (
-                            <p className="text-xs text-slate-500">Loading squads…</p>
-                        ) : participants.length === 0 ? (
-                            <p className="text-xs text-slate-500">
-                                No squads added yet for this tournament. Use the form above to
-                                add your first team or player.
-                            </p>
-                        ) : (
-                            <div className="overflow-x-auto">
-                                <table className="min-w-full text-sm">
-                                    <thead>
-                                        <tr className="border-b border-slate-800 bg-slate-900/90 text-xs uppercase tracking-[0.16em] text-slate-400">
-                                            <th className="py-2 px-2 text-left">Name</th>
-                                            <th className="py-2 px-2 text-left">Team</th>
-                                            <th className="py-2 px-2 text-left">Contact</th>
-                                            <th className="py-2 px-2 text-right">Fee (₹)</th>
-                                            <th className="py-2 px-2 text-right">Paid (₹)</th>
-                                            <th className="py-2 px-2 text-right">Remaining (₹)</th>
-                                            <th className="py-2 px-2 text-center">Status</th>
-                                            <th className="py-2 px-2 text-center">Actions</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {participants.map((p, idx) => {
-                                            const remaining = p.amountDue - p.amountPaid;
-                                            return (
-                                                <tr
-                                                    key={p.id}
-                                                    className={
-                                                        "border-b border-slate-800/60 " +
-                                                        (idx % 2 === 0
-                                                            ? "bg-slate-900/60"
-                                                            : "bg-slate-950/40")
-                                                    }
-                                                >
-                                                    <td className="py-2.5 px-2 text-slate-100">
-                                                        {p.name}
-                                                    </td>
-                                                    <td className="py-2.5 px-2 text-slate-300">
-                                                        {p.teamName || "-"}
-                                                    </td>
-                                                    <td className="py-2.5 px-2 text-slate-400">
-                                                        {p.contact || "-"}
-                                                    </td>
-                                                    <td className="py-2.5 px-2 text-right text-slate-200">
-                                                        {p.amountDue}
-                                                    </td>
-                                                    <td className="py-2.5 px-2 text-right">
-                                                        <div className="flex items-center justify-end gap-2">
-                                                            <span className="text-slate-200">
-                                                                ₹{p.amountPaid}
-                                                            </span>
-                                                            <button
-                                                                className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-200 hover:border-emerald-400/70 hover:text-emerald-300 transition"
-                                                                type="button"
-                                                                onClick={() => handleEditPaidClick(p)}
-                                                                title="Edit paid amount"
-                                                            >
-                                                                ✏️
-                                                            </button>
-                                                        </div>
-                                                    </td>
-                                                    <td className="py-2.5 px-2 text-right text-slate-200">
-                                                        {remaining}
-                                                    </td>
-                                                    <td className="py-2.5 px-2 text-center">
-                                                        <StatusPill status={p.status} />
-                                                    </td>
-                                                    <td className="py-2.5 px-2 text-center">
-                                                        <div className="flex items-center justify-center gap-2 flex-wrap">
-                                                            <button
-                                                                className="rounded-full border border-slate-700 px-2.5 py-1 text-[11px] text-slate-200 hover:border-sky-400/70 hover:text-sky-300 transition"
-                                                                onClick={() => openEditParticipantDetails(p)}
-                                                            >
-                                                                Edit
-                                                            </button>
-                                                            {p.contact && (
-                                                                <button
-                                                                    className="rounded-full border border-slate-700 px-2.5 py-1 text-[11px] text-slate-200 hover:border-emerald-400/70 hover:text-emerald-300 transition"
-                                                                    onClick={() => sendReminder(p)}
-                                                                >
-                                                                    Reminder
-                                                                </button>
-                                                            )}
-                                                            {p.amountPaid > 0 && selectedTournamentId && (
-                                                                <button
-                                                                    className="rounded-full border border-slate-700 px-2.5 py-1 text-[11px] text-slate-200 hover:border-squadpay-green/70 hover:text-squadpay-green transition"
-                                                                    onClick={() => {
-                                                                        const base = import.meta.env.BASE_URL || "/";
-                                                                        window.open(
-                                                                            `${base}t/${selectedTournamentId}/receipt/${p.id}`,
-                                                                            "_blank"
-                                                                        );
-                                                                    }}
-                                                                >
-                                                                    Receipt
-                                                                </button>
-                                                            )}
-                                                            <button
-                                                                className="rounded-full border border-slate-700 px-2.5 py-1 text-[11px] text-rose-300 hover:border-rose-400/70 hover:text-rose-200 transition"
-                                                                onClick={() => setDeleteParticipant(p)}
-                                                            >
-                                                                Delete
-                                                            </button>
-                                                        </div>
-                                                    </td>
+                        <div className="flex-1 min-h-0">
+                            {loadingParticipants ? (
+                                <p className="text-xs text-slate-500">Loading squads…</p>
+                            ) : filteredParticipants.length === 0 ? (
+                                <p className="text-xs text-slate-500">
+                                    No matching participants for this filter. Try changing the
+                                    filter or add a new squad.
+                                </p>
+                            ) : (
+                                <div className="h-full overflow-x-auto">
+                                    <div className="h-full overflow-y-auto">
+                                        <table className="min-w-full text-sm">
+                                            <thead>
+                                                <tr className="border-b border-slate-800 bg-slate-900/90 text-xs uppercase tracking-[0.16em] text-slate-400">
+                                                    <th className="py-2 px-2 text-left">Player</th>
+                                                    <th className="py-2 px-2 text-left">Team</th>
+                                                    <th className="py-2 px-2 text-left">Contact</th>
+                                                    <th className="py-2 px-2 text-right">Fee (₹)</th>
+                                                    <th className="py-2 px-2 text-right">Paid (₹)</th>
+                                                    <th className="py-2 px-2 text-right">Remaining (₹)</th>
+                                                    <th className="py-2 px-2 text-center">Status</th>
+                                                    <th className="py-2 px-2 text-center">Actions</th>
                                                 </tr>
-                                            );
-                                        })}
-                                    </tbody>
-                                </table>
-                            </div>
-                        )}
+                                            </thead>
+                                            <tbody>
+                                                {filteredParticipants.map((p, idx) => {
+                                                    const remaining = p.amountDue - p.amountPaid;
+                                                    return (
+                                                        <tr
+                                                            key={p.id}
+                                                            className={
+                                                                "border-b border-slate-800/60 " +
+                                                                (idx % 2 === 0
+                                                                    ? "bg-slate-900/60"
+                                                                    : "bg-slate-950/40")
+                                                            }
+                                                        >
+                                                            <td className="py-2.5 px-2 text-slate-100">
+                                                                <div className="flex items-center gap-2">
+                                                                    {p.photoUrl ? (
+                                                                        <img
+                                                                            src={p.photoUrl}
+                                                                            onClick={() => p.photoUrl && setPreviewImage(p.photoUrl)}
+                                                                            className="h-10 w-10 object-cover rounded-full cursor-pointer hover:ring-2 hover:ring-emerald-400/50 transition"
+                                                                        />
+                                                                    ) : (
+                                                                        <div className="h-7 w-7 rounded-full bg-slate-800 flex items-center justify-center text-[10px] text-slate-300 border border-slate-700">
+                                                                            {p.name
+                                                                                .split(" ")
+                                                                                .map((n) => n[0])
+                                                                                .join("")
+                                                                                .slice(0, 2)
+                                                                                .toUpperCase()}
+                                                                        </div>
+                                                                    )}
+                                                                    <span>{p.name}</span>
+                                                                </div>
+                                                            </td>
+                                                            <td className="py-2.5 px-2 text-slate-300">
+                                                                {p.teamName || "-"}
+                                                            </td>
+                                                            <td className="py-2.5 px-2 text-slate-400">
+                                                                {p.contact || "-"}
+                                                            </td>
+                                                            <td className="py-2.5 px-2 text-right text-slate-200">
+                                                                {p.amountDue}
+                                                            </td>
+                                                            <td className="py-2.5 px-2 text-right">
+                                                                <div className="flex items-center justify-end gap-2">
+                                                                    <span className="text-slate-200">
+                                                                        ₹{p.amountPaid}
+                                                                    </span>
+                                                                    <button
+                                                                        className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-200 hover:border-emerald-400/70 hover:text-emerald-300 transition"
+                                                                        type="button"
+                                                                        onClick={() => handleEditPaidClick(p)}
+                                                                        title="Edit paid amount"
+                                                                    >
+                                                                        ✏️
+                                                                    </button>
+                                                                </div>
+                                                            </td>
+                                                            <td className="py-2.5 px-2 text-right text-slate-200">
+                                                                {remaining}
+                                                            </td>
+                                                            <td className="py-2.5 px-2 text-center">
+                                                                <StatusPill status={p.status} />
+                                                            </td>
+                                                            <td className="py-2.5 px-2 text-center">
+                                                                <ActionMenu
+                                                                    onEdit={() => openEditParticipantDetails(p)}
+                                                                    onDelete={() => setDeleteParticipant(p)}
+                                                                    onReceipt={
+                                                                        p.amountPaid > 0 && selectedTournamentId
+                                                                            ? () => openReceipt(p)
+                                                                            : undefined
+                                                                    }
+                                                                    onViewProof={
+                                                                        p.receiptUrl
+                                                                            ? () => window.open(p.receiptUrl!, "_blank")
+                                                                            : undefined
+                                                                    }
+                                                                    onReminder={p.contact ? () => sendReminder(p) : undefined}
+                                                                />
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
                     </section>
                 </>
             )}
@@ -773,11 +1025,13 @@ export function Dashboard() {
 
                         <div className="mb-4 space-y-1 text-xs text-slate-400">
                             <div>
-                                <span className="font-semibold text-slate-200">Fee:</span>{" "}
-                                ₹{editingParticipantPaid.amountDue}
+                                <span className="font-semibold text-slate-200">Fee:</span> ₹
+                                {editingParticipantPaid.amountDue}
                             </div>
                             <div>
-                                <span className="font-semibold text-slate-200">Current Paid:</span>{" "}
+                                <span className="font-semibold text-slate-200">
+                                    Current Paid:
+                                </span>{" "}
                                 ₹{editingParticipantPaid.amountPaid}
                             </div>
                         </div>
@@ -789,8 +1043,30 @@ export function Dashboard() {
                             type="number"
                             value={editPaidValue}
                             onChange={(e) => setEditPaidValue(e.target.value)}
-                            className="w-full rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400/70 focus:ring-1 focus:ring-emerald-500/50 mb-5"
+                            className="w-full rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400/70 focus:ring-1 focus:ring-emerald-500/50 mb-4"
                         />
+
+                        <label className="text-[11px] uppercase tracking-[0.16em] text-slate-400 block mb-1">
+                            Payment Ref / UTR (optional)
+                        </label>
+                        <input
+                            type="text"
+                            value={editPaymentRef}
+                            onChange={(e) => setEditPaymentRef(e.target.value)}
+                            placeholder="UPI Ref / UTR / Txn ID"
+                            className="w-full rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400/70 focus:ring-1 focus:ring-emerald-500/50 mb-4"
+                        />
+
+                        <label className="text-[11px] uppercase tracking-[0.16em] text-slate-400 block mb-1">
+                            Payment Proof (optional)
+                        </label>
+                        <input
+                            type="file"
+                            accept="image/*"
+                            className="w-full text-[11px] text-slate-400 file:mr-2 file:rounded-lg file:border file:border-slate-600 file:bg-slate-800 file:px-2 file:py-1 file:text-[11px] file:text-slate-200 hover:file:border-emerald-400/70 hover:file:text-emerald-300 mb-5"
+                            onChange={(e) => setReceiptFile(e.target.files?.[0] ?? null)}
+                        />
+
 
                         <div className="flex justify-end gap-2">
                             <button
@@ -863,6 +1139,20 @@ export function Dashboard() {
                                     onChange={(e) => setEditFee(e.target.value)}
                                 />
                             </div>
+
+                            <div className="flex flex-col gap-1">
+                                <label className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
+                                    Photo (optional)
+                                </label>
+                                <input
+                                    type="file"
+                                    accept="image/*"
+                                    className="text-[11px] text-slate-400 file:mr-2 file:rounded-lg file:border file:border-slate-600 file:bg-slate-800 file:px-2 file:py-1 file:text-[11px] file:text-slate-200 hover:file:border-emerald-400/70 hover:file:text-emerald-300"
+                                    onChange={(e) =>
+                                        setEditPhotoFile(e.target.files?.[0] ?? null)
+                                    }
+                                />
+                            </div>
                         </div>
 
                         <div className="flex justify-end gap-2 mt-5">
@@ -912,6 +1202,7 @@ export function Dashboard() {
                     </div>
                 </div>
             )}
+
             {/* Delete participant modal */}
             {deleteParticipant && (
                 <ConfirmModal
@@ -939,6 +1230,9 @@ export function Dashboard() {
                         setDeleteTournament(null);
                     }}
                 />
+            )}
+            {previewImage && (
+                <ImagePreviewModal url={previewImage} onClose={() => setPreviewImage(null)} />
             )}
 
         </div>
@@ -992,3 +1286,20 @@ function StatusPill({ status }: { status: PaymentStatus }) {
         </span>
     );
 }
+
+const ImagePreviewModal = ({ url, onClose }: { url: string; onClose: () => void }) => {
+    if (!url) return null;
+
+    return (
+        <div
+            className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center cursor-zoom-out"
+            onClick={onClose}
+        >
+            <img
+                src={url}
+                className="max-w-[90%] max-h-[90%] rounded-xl shadow-2xl cursor-default"
+                onClick={(e) => e.stopPropagation()}
+            />
+        </div>
+    );
+};
