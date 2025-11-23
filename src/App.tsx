@@ -9,25 +9,51 @@ import type { User } from "firebase/auth";
 import { Routes, Route } from "react-router-dom";
 import { Dashboard } from "./Dashboard";
 import { Receipt } from "./Receipt";
+import { db } from "./firebase";
+import { doc, getDoc } from "firebase/firestore";
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [showSignOutModal, setShowSignOutModal] = useState(false);
+  const [isOrganizer, setIsOrganizer] = useState<boolean | null>(null);
+  const [checkingOrganizer, setCheckingOrganizer] = useState(false);
 
   useEffect(() => {
-    if (!auth) {
-      setLoading(false);
-      return;
+  if (!auth) {
+    setLoading(false);
+    return;
+  }
+
+  const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+    setUser(firebaseUser);
+    setLoading(false);
+
+    if (firebaseUser && db) {
+      setCheckingOrganizer(true);
+      try {
+        const email = firebaseUser.email;
+        if (!email) {
+          setIsOrganizer(false);
+        } else {
+          const ref = doc(db, "admins", email);
+          const snap = await getDoc(ref);
+          setIsOrganizer(snap.exists());
+        }
+      } catch (e) {
+        console.error("Error checking admin status", e);
+        setIsOrganizer(false);
+      } finally {
+        setCheckingOrganizer(false);
+      }
+    } else {
+      setIsOrganizer(null);
     }
+  });
 
-    const unsub = onAuthStateChanged(auth, (firebaseUser) => {
-      setUser(firebaseUser);
-      setLoading(false);
-    });
+  return () => unsub();
+}, []);
 
-    return () => unsub();
-  }, []);
 
   const handleSignIn = async () => {
     if (!auth) {
@@ -105,6 +131,38 @@ function App() {
       </div>
     );
   }
+
+  if (checkingOrganizer || isOrganizer === null) {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-950">
+      <div className="text-slate-300 text-sm">Verifying access…</div>
+    </div>
+  );
+}
+
+// Logged in but NOT an organizer
+if (isOrganizer === false) {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-950">
+      <div className="max-w-md mx-4 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 text-center shadow-2xl">
+        <h1 className="text-sm font-semibold text-slate-100 mb-2">
+          Access restricted
+        </h1>
+        <p className="text-xs text-slate-400 mb-4">
+          This Google account is not registered as an organizer for SquadPay.
+          Please contact the tournament admin (Param) to be added as an
+          organizer.
+        </p>
+        <button
+          onClick={handleSignOut}
+          className="rounded-full border border-slate-700 px-4 py-1.5 text-xs text-slate-200 hover:border-rose-400/70 hover:text-rose-300 transition"
+        >
+          Sign out
+        </button>
+      </div>
+    </div>
+  );
+}
 
   // ✅ Logged in – header + routes + sign-out modal
   return (
