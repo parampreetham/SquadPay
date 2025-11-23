@@ -10,8 +10,12 @@ import {
     query,
     serverTimestamp,
     updateDoc,
+    getDocs,
+    writeBatch,
+    deleteDoc,
 } from "firebase/firestore";
 import type { Participant, PaymentStatus, Tournament } from "./types";
+import ConfirmModal from "./components/ConfirmModal";
 
 function computeStatus(amountFee: number, amountPaid: number): PaymentStatus {
     if (amountPaid <= 0) return "pending";
@@ -28,6 +32,10 @@ export function Dashboard() {
     const [loadingParticipants, setLoadingParticipants] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
+    const [deleteParticipant, setDeleteParticipant] = useState<Participant | null>(null);
+    const [deleteTournament, setDeleteTournament] = useState<Tournament | null>(null);
+
+
     // Tournament form
     const [newTournamentName, setNewTournamentName] = useState("");
 
@@ -37,9 +45,20 @@ export function Dashboard() {
     const [contact, setContact] = useState("");
     const [fee, setFee] = useState("");
 
-    // 🔹 Edit Paid modal state
-    const [editingParticipant, setEditingParticipant] = useState<Participant | null>(null);
+    // Edit Paid modal
+    const [editingParticipantPaid, setEditingParticipantPaid] = useState<Participant | null>(null);
     const [editPaidValue, setEditPaidValue] = useState<string>("");
+
+    // Edit Participant modal
+    const [editingParticipantDetails, setEditingParticipantDetails] = useState<Participant | null>(null);
+    const [editName, setEditName] = useState("");
+    const [editTeamName, setEditTeamName] = useState("");
+    const [editContact, setEditContact] = useState("");
+    const [editFee, setEditFee] = useState("");
+
+    // Edit Tournament modal
+    const [editingTournament, setEditingTournament] = useState<Tournament | null>(null);
+    const [editTournamentName, setEditTournamentName] = useState("");
 
     // 🔹 Load tournaments
     useEffect(() => {
@@ -66,8 +85,13 @@ export function Dashboard() {
                 setTournaments(list);
                 setLoadingTournaments(false);
 
+                // Auto-select first tournament if nothing selected
                 if (!selectedTournamentId && list.length > 0) {
                     setSelectedTournamentId(list[0].id);
+                }
+                // If the selected one was deleted, clear it
+                if (selectedTournamentId && !list.find((t) => t.id === selectedTournamentId)) {
+                    setSelectedTournamentId(list[0]?.id ?? null);
                 }
             },
             (err) => {
@@ -138,6 +162,7 @@ export function Dashboard() {
         return { totalFee, totalPaid, totalRemaining };
     }, [participants]);
 
+    // 🔹 Create tournament
     const handleCreateTournament = async (e: FormEvent) => {
         e.preventDefault();
         if (!db) return;
@@ -161,6 +186,57 @@ export function Dashboard() {
         }
     };
 
+    // 🔹 Rename tournament
+    const openRenameTournament = (t: Tournament) => {
+        setEditingTournament(t);
+        setEditTournamentName(t.name);
+    };
+
+    const handleSaveTournamentName = async () => {
+        if (!db || !editingTournament) return;
+
+        const newName = editTournamentName.trim();
+        if (!newName) {
+            alert("Tournament name cannot be empty");
+            return;
+        }
+
+        try {
+            const ref = doc(db, "tournaments", editingTournament.id);
+            await updateDoc(ref, { name: newName });
+            setEditingTournament(null);
+        } catch (err) {
+            console.error("Error renaming tournament:", err);
+            alert("Failed to rename tournament.");
+        }
+    };
+
+    // 🔹 Delete tournament (+ participants)
+    const handleDeleteTournament = async (t: Tournament) => {
+        if (!db) return;
+
+        try {
+            const tRef = doc(db, "tournaments", t.id);
+            const participantsRef = collection(tRef, "participants");
+            const snap = await getDocs(participantsRef);
+            const batch = writeBatch(db);
+
+            snap.forEach((pDoc) => batch.delete(pDoc.ref));
+            batch.delete(tRef);
+
+            await batch.commit();
+
+            if (selectedTournamentId === t.id) {
+                setSelectedTournamentId(null);
+            }
+        } catch (err) {
+            console.error("Error deleting tournament:", err);
+            alert("Failed to delete tournament.");
+        }
+    };
+
+
+    // 🔹 Add participant
     const handleAddParticipant = async (e: FormEvent) => {
         e.preventDefault();
         if (!db) return;
@@ -209,6 +285,7 @@ export function Dashboard() {
         }
     };
 
+    // 🔹 Update Paid
     const handleUpdatePaid = async (p: Participant, newPaid: number) => {
         if (!db || !selectedTournamentId) return;
         if (Number.isNaN(newPaid) || newPaid < 0) {
@@ -236,27 +313,98 @@ export function Dashboard() {
         }
     };
 
-    // 🔹 open custom edit modal
+    // 🔹 Edit Paid modal open/close
     const handleEditPaidClick = (p: Participant) => {
-        setEditingParticipant(p);
+        setEditingParticipantPaid(p);
         setEditPaidValue(p.amountPaid.toString());
     };
 
     const handleConfirmEditPaid = async () => {
-        if (!editingParticipant) return;
+        if (!editingParticipantPaid) return;
         const value = Number(editPaidValue);
         if (Number.isNaN(value) || value < 0) {
             alert("Paid amount must be 0 or a positive number");
             return;
         }
-        await handleUpdatePaid(editingParticipant, value);
-        setEditingParticipant(null);
+        await handleUpdatePaid(editingParticipantPaid, value);
+        setEditingParticipantPaid(null);
     };
 
     const handleCancelEditPaid = () => {
-        setEditingParticipant(null);
+        setEditingParticipantPaid(null);
     };
 
+    // 🔹 Edit Participant details
+    const openEditParticipantDetails = (p: Participant) => {
+        setEditingParticipantDetails(p);
+        setEditName(p.name);
+        setEditTeamName(p.teamName ?? "");
+        setEditContact(p.contact ?? "");
+        setEditFee(p.amountDue.toString());
+    };
+
+    const handleSaveParticipantDetails = async () => {
+        if (!db || !selectedTournamentId || !editingParticipantDetails) return;
+
+        const newFee = Number(editFee);
+        if (!editName.trim()) {
+            alert("Name is required");
+            return;
+        }
+        if (Number.isNaN(newFee) || newFee <= 0) {
+            alert("Fee must be a positive number");
+            return;
+        }
+
+        const status = computeStatus(newFee, editingParticipantDetails.amountPaid);
+
+        try {
+            const ref = doc(
+                db,
+                "tournaments",
+                selectedTournamentId,
+                "participants",
+                editingParticipantDetails.id
+            );
+            await updateDoc(ref, {
+                name: editName.trim(),
+                teamName: editTeamName.trim() || null,
+                contact: editContact.trim() || null,
+                amountDue: newFee,
+                status,
+            });
+            setEditingParticipantDetails(null);
+        } catch (err) {
+            console.error("Error updating participant:", err);
+            alert("Failed to update participant.");
+        }
+    };
+
+    const handleCancelParticipantDetails = () => {
+        setEditingParticipantDetails(null);
+    };
+
+    // 🔹 Delete participant
+    const handleDeleteParticipant = async (p: Participant) => {
+        if (!db || !selectedTournamentId) return;
+
+        try {
+            const ref = doc(
+                db,
+                "tournaments",
+                selectedTournamentId,
+                "participants",
+                p.id
+            );
+            await deleteDoc(ref);
+        } catch (err) {
+            console.error("Error deleting participant:", err);
+            alert("Failed to delete participant.");
+        }
+    };
+
+
+    // 🔹 WhatsApp reminder
     const sendReminder = (p: Participant) => {
         const remaining = p.amountDue - p.amountPaid;
         const phone = p.contact?.replace(/\D/g, "");
@@ -352,12 +500,28 @@ export function Dashboard() {
                     </form>
 
                     {selectedTournament && (
-                        <p className="text-xs text-slate-400">
-                            Selected:{" "}
-                            <span className="text-emerald-300">
-                                {selectedTournament.name}
+                        <div className="flex flex-wrap items-center gap-2 text-xs mt-2">
+                            <span className="text-slate-400">
+                                Selected:{" "}
+                                <span className="text-emerald-300">
+                                    {selectedTournament.name}
+                                </span>
                             </span>
-                        </p>
+                            <button
+                                type="button"
+                                onClick={() => openRenameTournament(selectedTournament)}
+                                className="rounded-full border border-slate-700 px-3 py-1 text-[11px] text-slate-200 hover:border-emerald-400/70 hover:text-emerald-300 transition"
+                            >
+                                Rename
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setDeleteTournament(selectedTournament)}
+                                className="rounded-full border border-slate-700 px-3 py-1 text-[11px] text-rose-300 hover:border-rose-400/70 hover:text-rose-200 transition"
+                            >
+                                Delete
+                            </button>
+                        </div>
                     )}
                 </div>
 
@@ -546,7 +710,13 @@ export function Dashboard() {
                                                         <StatusPill status={p.status} />
                                                     </td>
                                                     <td className="py-2.5 px-2 text-center">
-                                                        <div className="flex items-center justify-center gap-2">
+                                                        <div className="flex items-center justify-center gap-2 flex-wrap">
+                                                            <button
+                                                                className="rounded-full border border-slate-700 px-2.5 py-1 text-[11px] text-slate-200 hover:border-sky-400/70 hover:text-sky-300 transition"
+                                                                onClick={() => openEditParticipantDetails(p)}
+                                                            >
+                                                                Edit
+                                                            </button>
                                                             {p.contact && (
                                                                 <button
                                                                     className="rounded-full border border-slate-700 px-2.5 py-1 text-[11px] text-slate-200 hover:border-emerald-400/70 hover:text-emerald-300 transition"
@@ -560,12 +730,21 @@ export function Dashboard() {
                                                                     className="rounded-full border border-slate-700 px-2.5 py-1 text-[11px] text-slate-200 hover:border-squadpay-green/70 hover:text-squadpay-green transition"
                                                                     onClick={() => {
                                                                         const base = import.meta.env.BASE_URL || "/";
-                                                                        window.open(`${base}t/${selectedTournamentId}/receipt/${p.id}`, "_blank");
+                                                                        window.open(
+                                                                            `${base}t/${selectedTournamentId}/receipt/${p.id}`,
+                                                                            "_blank"
+                                                                        );
                                                                     }}
                                                                 >
                                                                     Receipt
                                                                 </button>
                                                             )}
+                                                            <button
+                                                                className="rounded-full border border-slate-700 px-2.5 py-1 text-[11px] text-rose-300 hover:border-rose-400/70 hover:text-rose-200 transition"
+                                                                onClick={() => setDeleteParticipant(p)}
+                                                            >
+                                                                Delete
+                                                            </button>
                                                         </div>
                                                     </td>
                                                 </tr>
@@ -579,27 +758,27 @@ export function Dashboard() {
                 </>
             )}
 
-            {/* 🔹 Edit Paid modal */}
-            {editingParticipant && (
+            {/* Edit Paid modal */}
+            {editingParticipantPaid && (
                 <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
                     <div className="w-full max-w-sm mx-4 rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
                         <h2 className="text-sm font-semibold text-slate-50 mb-2">
                             Edit Paid Amount
                         </h2>
                         <p className="text-xs text-slate-400 mb-4">
-                            {editingParticipant.teamName
-                                ? `${editingParticipant.name} (${editingParticipant.teamName})`
-                                : editingParticipant.name}
+                            {editingParticipantPaid.teamName
+                                ? `${editingParticipantPaid.name} (${editingParticipantPaid.teamName})`
+                                : editingParticipantPaid.name}
                         </p>
 
                         <div className="mb-4 space-y-1 text-xs text-slate-400">
                             <div>
                                 <span className="font-semibold text-slate-200">Fee:</span>{" "}
-                                ₹{editingParticipant.amountDue}
+                                ₹{editingParticipantPaid.amountDue}
                             </div>
                             <div>
                                 <span className="font-semibold text-slate-200">Current Paid:</span>{" "}
-                                ₹{editingParticipant.amountPaid}
+                                ₹{editingParticipantPaid.amountPaid}
                             </div>
                         </div>
 
@@ -630,6 +809,138 @@ export function Dashboard() {
                     </div>
                 </div>
             )}
+
+            {/* Edit Participant details modal */}
+            {editingParticipantDetails && (
+                <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+                    <div className="w-full max-w-md mx-4 rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+                        <h2 className="text-sm font-semibold text-slate-50 mb-3">
+                            Edit Participant
+                        </h2>
+
+                        <div className="grid gap-3">
+                            <div className="flex flex-col gap-1">
+                                <label className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
+                                    Name
+                                </label>
+                                <input
+                                    className="rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400/70 focus:ring-1 focus:ring-emerald-500/50"
+                                    value={editName}
+                                    onChange={(e) => setEditName(e.target.value)}
+                                />
+                            </div>
+
+                            <div className="flex flex-col gap-1">
+                                <label className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
+                                    Team Name (optional)
+                                </label>
+                                <input
+                                    className="rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400/70 focus:ring-1 focus:ring-emerald-500/50"
+                                    value={editTeamName}
+                                    onChange={(e) => setEditTeamName(e.target.value)}
+                                />
+                            </div>
+
+                            <div className="flex flex-col gap-1">
+                                <label className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
+                                    Contact (WhatsApp)
+                                </label>
+                                <input
+                                    className="rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400/70 focus:ring-1 focus:ring-emerald-500/50"
+                                    value={editContact}
+                                    onChange={(e) => setEditContact(e.target.value)}
+                                />
+                            </div>
+
+                            <div className="flex flex-col gap-1">
+                                <label className="text-[11px] uppercase tracking-[0.16em] text-slate-400">
+                                    Fee (₹)
+                                </label>
+                                <input
+                                    type="number"
+                                    className="rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400/70 focus:ring-1 focus:ring-emerald-500/50"
+                                    value={editFee}
+                                    onChange={(e) => setEditFee(e.target.value)}
+                                />
+                            </div>
+                        </div>
+
+                        <div className="flex justify-end gap-2 mt-5">
+                            <button
+                                onClick={handleCancelParticipantDetails}
+                                className="rounded-full border border-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:border-slate-500 hover:text-slate-100 transition"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleSaveParticipantDetails}
+                                className="rounded-full bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-emerald-400 transition shadow-md shadow-emerald-500/40"
+                            >
+                                Save
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Rename Tournament modal */}
+            {editingTournament && (
+                <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+                    <div className="w-full max-w-sm mx-4 rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+                        <h2 className="text-sm font-semibold text-slate-50 mb-3">
+                            Rename Tournament
+                        </h2>
+                        <input
+                            className="w-full rounded-xl border border-slate-700 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 outline-none focus:border-emerald-400/70 focus:ring-1 focus:ring-emerald-500/50 mb-5"
+                            value={editTournamentName}
+                            onChange={(e) => setEditTournamentName(e.target.value)}
+                        />
+                        <div className="flex justify-end gap-2">
+                            <button
+                                onClick={() => setEditingTournament(null)}
+                                className="rounded-full border border-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:border-slate-500 hover:text-slate-100 transition"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleSaveTournamentName}
+                                className="rounded-full bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-emerald-400 transition shadow-md shadow-emerald-500/40"
+                            >
+                                Save
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/* Delete participant modal */}
+            {deleteParticipant && (
+                <ConfirmModal
+                    title="Delete Participant?"
+                    message={`Are you sure you want to delete:\n${deleteParticipant.name}${deleteParticipant.teamName ? ` (${deleteParticipant.teamName})` : ""
+                        }?\n\nThis action cannot be undone.`}
+                    confirmText="Delete"
+                    onCancel={() => setDeleteParticipant(null)}
+                    onConfirm={async () => {
+                        await handleDeleteParticipant(deleteParticipant);
+                        setDeleteParticipant(null);
+                    }}
+                />
+            )}
+
+            {/* Delete tournament modal */}
+            {deleteTournament && (
+                <ConfirmModal
+                    title="Delete Tournament?"
+                    message={`Are you sure you want to delete "${deleteTournament.name}"?\n\nAll participants and payment data will be removed permanently.`}
+                    confirmText="Delete"
+                    onCancel={() => setDeleteTournament(null)}
+                    onConfirm={async () => {
+                        await handleDeleteTournament(deleteTournament);
+                        setDeleteTournament(null);
+                    }}
+                />
+            )}
+
         </div>
     );
 }
