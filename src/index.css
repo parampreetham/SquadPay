@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-950 text-slate-100 antialiased;
+}
+
+@media print {
+  body {
+    margin: 0;
+    background: #ffffff !important;
+  }
+
+  #root {
+    padding: 0;
+  }
+
+  /* Hide anything marked as no-print (back button, share/print controls) */
+  .no-print {
+    display: none !important;
+  }
+
+  /* Only show the receipt card, remove shadows and rounded corners for clean PDF */
+  #receipt-print {
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+}
