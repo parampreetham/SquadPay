@@ -5,12 +5,13 @@ import { getFirestore } from "firebase/firestore";
 
 // TODO: Replace with your real config from Firebase console
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  apiKey: "AIzaSyCjJJYffWslhDjfq82_BT57qsh1ykQqc2I",
+  authDomain: "squadpay-3117f.firebaseapp.com",
+  projectId: "squadpay-3117f",
+  storageBucket: "squadpay-3117f.firebasestorage.app",
+  messagingSenderId: "924248627582",
+  appId: "1:924248627582:web:d81b1b5b6f349cb2197b2f",
+  measurementId: "G-60GK57NLEX"
 };
 
 const app = initializeApp(firebaseConfig);
