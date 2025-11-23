@@ -28,6 +28,9 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+      # 👇 NEW: copy index.html -> 404.html for SPA fallback
+      - run: cp dist/index.html dist/404.html
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
